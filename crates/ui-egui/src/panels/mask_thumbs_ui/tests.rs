@@ -836,3 +836,70 @@ fn a_new_adjustment_layer_brings_properties_to_the_front() {
     assert!(!h.state().ui.dock.is_collapsed(crate::dock::Group::Properties), "the group is expanded");
     assert!(h.query_all_by_label("Reset to defaults").next().is_some(), "the Curves settings show");
 }
+
+// #10255: the thumbnail must reveal settings even after a workspace hides Properties.
+#[test]
+fn adjustment_thumbnail_double_click_reveals_properties() {
+    for layout in ["legacy", "closed", "collapsed", "inactive", "floating", "floatingClosed"] {
+        let mut s = photocraft_engine::Session::new();
+        s.execute("file.new", json!({"width": 200, "height": 100})).unwrap();
+        let id = s.execute("layer.newAdjustmentLayer.curves", json!({})).unwrap()["layer"].as_u64().unwrap();
+        let mut h = Harness::builder().with_size(vec2(1440.0, 1000.0)).with_step_dt(1.0 / 60.0).with_max_steps(64).build_eframe(move |cc| {
+            PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+            PhotocraftApp::new(s, crate::Services::default())
+        });
+        let ctx = h.ctx.clone();
+        let (req, _rx) = crate::control::ControlRequest::new(
+            "ui.set",
+            json!({"theme":"promedium","dockWidth":290.0,"dock":{"collapsed":["color","properties","history","navigator"]}}),
+        );
+        crate::control::handle(h.state_mut(), &ctx, &req);
+        h.run_steps(8);
+        if layout != "legacy" {
+            h.state_mut().run("window.panel.activate", json!({"panel":"adjustments"})).unwrap();
+            if layout.starts_with("floating") {
+                h.state_mut().run("window.panel.float", json!({"panel":"properties","x":300,"y":100,"width":330,"height":460})).unwrap();
+            }
+            match layout {
+                "closed" | "floatingClosed" => {
+                    h.state_mut().run("window.panel.close", json!({"panel":"properties"})).unwrap();
+                }
+                "collapsed" => {
+                    h.state_mut().run("window.panel.group", json!({"panel":"properties","operation":"collapse"})).unwrap();
+                }
+                "floating" => {
+                    h.state_mut().run("window.panel.move", json!({"panel":"adjustments","anchor":"properties"})).unwrap();
+                    h.state_mut().run("window.panel.activate", json!({"panel":"adjustments"})).unwrap();
+                }
+                _ => {}
+            }
+        } else {
+            h.state_mut().ui.panels.properties = false;
+            h.state_mut().ui.dock_tabs.properties = 1;
+        }
+        h.run_steps(6);
+        assert!(h.query_all_by_label("Reset to defaults").next().is_none(), "{layout}: settings start hidden");
+        let output = std::env::var_os("PHOTOCRAFT_ADJUSTMENT_REVEAL_OUTPUT").map(std::path::PathBuf::from);
+        if let Some(directory) = &output {
+            std::fs::create_dir_all(directory).unwrap();
+            h.render().unwrap().save(directory.join(format!("{layout}-before.png"))).unwrap();
+        }
+        let at = crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|row| row.layer == id).unwrap().thumbnail.unwrap().center();
+        h.hover_at(at);
+        h.run_steps(1);
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+                h.run_steps(1);
+            }
+        }
+        h.run_steps(6);
+        if let Some(directory) = &output {
+            h.render().unwrap().save(directory.join(format!("{layout}-after.png"))).unwrap();
+        }
+        assert_eq!(h.state().session.active().unwrap().active_layer, Some(photocraft_doc::LayerId(id)));
+        assert!(!h.state().ui.mask_target, "{layout}: contents, not mask, targeted");
+        assert!(h.query_all_by_label("Density").next().is_none(), "{layout}: not mask settings");
+        assert!(h.query_all_by_label("Reset to defaults").next().is_some(), "{layout}: Curves settings revealed; status: {}", h.state().ui.status);
+    }
+}

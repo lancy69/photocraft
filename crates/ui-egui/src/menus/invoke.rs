@@ -361,8 +361,14 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
                 return Ok(json!({"dialog": dialog}));
             }
             let r = app.run(id, params)?;
-            app.ui.panels.properties = true;
-            app.ui.dock_tabs.properties = 0;
+            // A custom workspace can hide, collapse or float Properties independently of
+            // the legacy visibility flag. Activate it just as when creating an adjustment.
+            if app.ui.docking.is_some() {
+                let _ = crate::panel_docking::command(app, "window.panel.activate", &json!({"panel": "properties"}));
+            } else {
+                app.ui.dock_tabs.properties = 0;
+                crate::dock::reveal(app, crate::dock::Group::Properties);
+            }
             Ok(r)
         }
         // Edit › Stroke…: open its full options dialog when called from menus/context
